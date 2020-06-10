@@ -65,12 +65,19 @@ install_valgrind_into_initramfs
 install_libc_into_initramfs
 bundle_initramfs
 
+if [[ ! -e "$TOP/launch_qemu.sh" ]]; then
+	# don't overwrite, in case the user modified the script
+	echo "#!/bin/bash" > "$TOP/launch_qemu.sh"
+	echo '"'"$TOP/obj/qemu-aarch64/aarch64-softmmu/qemu-system-aarch64"'"'" -machine virt -cpu cortex-a57 -m 2048 -smp 2 -nographic -kernel "'"'"$TOP/obj/linux-arm64-qemuconfig/arch/arm64/boot/Image"'"'" -append "'"'"console=ttyAMA0 earlyprintk=serial"'"'" -initrd "'"'"$TOP/initramfs.cpio"'"'" -virtfs local,id=x0,path="'"'"$TOP/exchange"'"'",security_model=none,mount_tag=exchange" >> "$TOP/launch_qemu.sh"
+	chmod +x "$TOP/launch_qemu.sh"
+	echo_red "Generated launch_qemu.sh"
+fi
 
-mkdir -p "$TOP/exchange"
+[ ! -d "$TOP/exchange" ] && mkdir -p "$TOP/exchange" && echo_red "Created exchange directory"
 
 echo_red "done"
 echo
-echo "To launch qemu, use:"
+echo "To launch qemu, use the script launch_qemu.sh or:"
 echo "  "'"'"$TOP/obj/qemu-aarch64/aarch64-softmmu/qemu-system-aarch64"'"'" -machine virt -cpu cortex-a57 -m 2048 -smp 2 -nographic -kernel "'"'"$TOP/obj/linux-arm64-qemuconfig/arch/arm64/boot/Image"'"'" -append "'"'"console=ttyAMA0 earlyprintk=serial"'"'" -initrd "'"'"$TOP/initramfs.cpio"'"'" -virtfs local,id=x0,path="'"'"$TOP/exchange"'"'",security_model=none,mount_tag=exchange"
 echo "  Terminate QEMU with ctrl-a x"
 echo "An exchange folder is mounted:"
@@ -103,15 +110,15 @@ build_linux()
 	#make O="$TOP/obj/linux-arm64-qemuconfig" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE_ELF" menuconfig; exit 0
 cat > "$TOP/obj/linux-arm64-qemuconfig/.config.fragment" << EOF
 CONFIG_BLK_DEV_INITRD=y
-CONFIG_RD_GZIP=y
+# CONFIG_RD_GZIP=y # we are not using a gzip'ed initramfs right now
 CONFIG_BINFMT_ELF=y
-CONFIG_BINFMT_SCRIPT=y
+CONFIG_BINFMT_SCRIPT=y # for init
 CONFIG_TTY=y
 CONFIG_SERIAL_AMBA_PL011=y
 CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
-CONFIG_PROC_FS=y
-CONFIG_SYSFS=y
-CONFIG_DEVTMPFS=y
+CONFIG_PROC_FS=y # required for valgrind's --trace-children
+# CONFIG_SYSFS=y
+# CONFIG_DEVTMPFS=y
 CONFIG_PRINTK=y
 CONFIG_PRINTK_TIME=y
 # VirtFS (Plan 9 folder sharing over Virtio - I/O virtualization framework)
@@ -163,18 +170,18 @@ build_busybox()
 install_busybox_into_initramfs()
 {
 	cp -av "$TOP/obj/busybox-aarch64/_install/"* "$TOP/initramfs/"
-cat > init << EOF
+cat > "$TOP/initramfs/init" << EOF
 #!/bin/sh
 mount -t proc none /proc
-mount -t sysfs none /sys
-mount -t devtmpfs devtmpfs /dev
+# mount -t sysfs none /sys
+# mount -t devtmpfs devtmpfs /dev
 mount -t 9p -o trans=virtio exchange /mnt -oversion=9p2000.L
 echo "Hand over from Kernel to Init succeeded. Dropping to Busybox shell."
 echo "Note: Terminate QEMU with Ctrl-A X"
 export VALGRIND_LIB=/lib/valgrind
 exec /bin/sh
 EOF
-	chmod +x init
+	chmod +x "$TOP/initramfs/init"
 }
 
 
@@ -235,11 +242,9 @@ bundle_initramfs()
 {
 	echo_red "Bundling initramfs"
 	cd "$TOP/initramfs"
-	sudo chown -R root:root *
-	find . | cpio -H newc -o > "$TOP/initramfs.cpio"
-	# Skipping gzip since we can start faster without it.
+	find . | cpio --create --format=newc --owner=root:root > "$TOP/initramfs.cpio"
+	# Skipping gzip since loading raw from RAM is faster than decompression.
 	#cat "$TOP/initramfs.cpio" | gzip > "$TOP/initramfs.img.gz"
-	sudo chown -R $(id -u):$(id -g) *
 }
 
 
